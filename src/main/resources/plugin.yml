@@ -1,0 +1,31 @@
+name: BackdoorGuard
+version: '${project.version}'
+main: com.security.backdoorguard.BackdoorGuardPlugin
+api-version: '1.21'
+author: TaiAnh
+# STARTUP thay vi mac dinh POSTWORLD: BackdoorGuard duoc nap va onEnable() cang som cang
+# tot trong qua trinh khoi dong server (truoc khi world duoc load), giup CommandGuardListener
+# va ChatTriggerListener co mat va bat dau giam sat SOM HON, thu hep khoang thoi gian trong
+# ma mot backdoor co the loi dung truoc khi he thong bao ve kip bat dau.
+# Luu y: thu tu nap giua cac plugin CUNG STARTUP van phu thuoc dependency graph (depend/
+# softdepend/loadbefore) chu Bukkit khong co "do uu tien" tuyet doi - neu can BackdoorGuard
+# chac chan nap truoc mot plugin cu the nao do, khai bao them "loadbefore: [TenPluginDo]".
+load: STARTUP
+description: Detects suspicious plugin JARs, hidden commands, and unauthorized operator changes.
+
+commands:
+  bguard:
+    description: BackdoorGuard administration command
+    usage: /bguard <reload|status|scan|trust <jar>|vl <player>|cache clear|audit>
+    permission: backdoorguard.admin
+
+permissions:
+  backdoorguard.admin:
+    description: May use BackdoorGuard administration commands
+    default: op
+  backdoorguard.bypass:
+    description: Bypass player command heuristics (use only for trusted accounts)
+    default: false
+  backdoorguard.notify:
+    description: Receive real-time security alerts in chat
+    default: op

@@ -1,0 +1,208 @@
+# ============================================
+# BackdoorGuard config
+# 'language' is the fallback/default for console and players with unknown locale.
+# Player-facing admin responses and staff alert wrappers use each player's client locale when supported.
+# Supported: en, vi, es, zh_CN, fr, de, pt_BR, ru, ja, ko
+language: "vi"
+# ============================================
+
+# Nhung nguoi choi/UUID duy nhat duoc phep giu OP.
+# Bat ky ai duoc set OP ma khong co trong danh sach nay se bi go OP + kick ngay lap tuc.
+whitelisted-ops: []
+# Add the real operator name(s) or UUID(s) above before enabling strict OP enforcement.
+# If the list is empty, BackdoorGuard fails safe and will NOT remove all operators.
+
+# Tu khoa nhay cam trong lenh (khong phan biet hoa/thuong).
+# Duoc so khop theo TU/NGUYEN CUM, khong phai substring - "stop" se khong khop "backstop".
+suspicious-keywords:
+  - "op"
+  - "deop"
+  - "pex"
+  - "luckperms"
+  - "ban"
+  - "stop"
+  - "vault"
+  - "eval"
+  - "sudo"
+
+# Log ra file rieng trong plugins/BackdoorGuard/logs/, khong dung logger mac dinh cua Bukkit.
+logging:
+  enabled: true
+  broadcast-to-admins: true
+
+# Discord webhook de nhan canh bao realtime. De trong "" de tat.
+discord:
+  webhook-url: ""
+  username: "BackdoorGuard"
+
+# Quet bytecode cac file .jar trong thu muc plugins/ moi khi server khoi dong.
+jar-scanner:
+  enabled: true
+  # Scan JAR files in plugin subfolders as well as the plugins/ root.
+  recursive: true
+  # Total JARs per scan; protects against unexpectedly huge plugin directories.
+  max-jars-per-scan: 500
+  # Bounded reads prevent oversized archives and ZIP bombs from exhausting memory.
+  max-jar-size-mb: 256
+  max-entry-size-mb: 8
+  max-uncompressed-mb-per-jar: 512
+  max-entries-per-jar: 40000
+  scan-resource-files: true
+  encoded-string-check: true
+  # Higher score means more independent suspicious indicators; this is alert-only.
+  alert-threshold: 40
+
+  worker-threads: 2
+  watch-enabled: true
+  watch-debounce-ms: 1500
+  max-nested-archives-per-jar: 8
+  max-nested-depth: 2
+  weights:
+    runtime: 18
+    process-builder: 22
+    network: 8
+    socket: 10
+    classloader: 10
+    reflection: 5
+    script-engine: 15
+    op: 14
+    permission-manipulation: 4
+    dispatch-command: 5
+    file-write: 4
+    file-read: 4
+    base64: 4
+    instrumentation: 22
+    unsafe: 10
+    plugin-loading: 12
+    chat-trigger: 3
+    hook-removal: 8
+    credential-access: 9
+    secret-terms: 2
+    outbound-upload: 8
+    native-load: 15
+    deserialization: 7
+    jar-mutation: 4
+    resource-indicator: 6
+    encoded-string: 4
+    encoded-cap: 20
+    decoded-payload: 15
+    obfuscated-identifier: 3
+    suspicious-endpoint: 5
+    path-traversal-entry: 12
+    duplicate-entry: 6
+    extreme-compression-ratio: 8
+    malformed-class: 8
+    nested-invalid: 6
+    nested-entry-limit: 5
+    entry-limit: 3
+    entry-size-limit: 5
+    nested-archive: 2
+    plugin-identity-mismatch: 40
+  combinations:
+    execution-network: 20
+    reflection-op: 24
+    encoded-execution: 18
+    chat-op: 25
+    plugin-loader: 18
+    self-protection: 15
+    read-upload: 18
+    credential-exfil: 28
+    secret-network: 8
+    native-loader: 22
+    agent-dynamic: 20
+    deserialize-input: 12
+    encoded-secret: 12
+    obfuscated-behavior: 12
+    endpoint-loader: 15
+
+# Recursive structure checks are conservative and only contribute risk points.
+# Hash-pinned exceptions apply only to selected generic signatures; combinations still count.
+known-good-signature-exceptions: {}
+
+# Optional identity pins. Add only values confirmed from the plugin's official release.
+# A JAR with the matching metadata name but a different main class receives a high-risk alert.
+# These examples are intentionally comments so version-specific class names are not trusted automatically.
+# To enable examples, replace the '{}' below with the mapping; do not uncomment both definitions.
+known-plugin-identities: {}
+# known-plugin-identities:
+#   EssentialsX: com.earth2me.essentials.Essentials
+#   LuckPerms: net.luckperms.bukkit.LuckPermsPlugin
+#   PlaceholderAPI: me.clip.placeholderapi.PlaceholderAPIPlugin
+#   Vault: net.milkbowl.vault.Vault
+#   ProtocolLib: com.comphenix.protocol.ProtocolLib
+#   WorldEdit: com.sk89q.worldedit.bukkit.WorldEditPlugin
+#   WorldGuard: com.sk89q.worldguard.bukkit.WorldGuardPlugin
+#   Citizens: net.citizensnpcs.Citizens
+#   CoreProtect: net.coreprotect.CoreProtect
+#   ViaVersion: com.viaversion.viaversion.ViaVersionPlugin
+
+# Runtime plugin identity/source and JVM agent flags are audited; alerts are informational.
+plugin-audit:
+  baseline-delay-seconds: 15
+  check-interval-seconds: 60
+  check-source-path: true
+jvm-audit:
+  enabled: true
+
+
+# Optional SHA-256 list of known-malicious JARs. A match raises a critical alert even if trusted; it does not automatically disable or delete the plugin.
+known-bad-jar-hashes: []
+
+# Reduce false positives: known commands such as /ban or /vault do not score based on name alone.
+# Unknown/typoed player commands are not evidence of a backdoor and are ignored by default.
+command-guard:
+  ignore-known-commands: true
+  detect-unknown-command-attempts: false
+
+# Danh sach SHA-256 cac file .jar da duoc admin xac nhan la an toan, quan ly qua lenh
+# "/bguard trust <ten_jar>". Cac jar co hash trong danh sach nay se duoc BO QUA hoan toan
+# khi quet, giup giam bao dong gia lap lai tren nhung plugin ban da biet ro va tin tuong.
+trusted-jar-hashes: []
+
+# ============================================
+# He thong cham diem nghi van (Violation Level)
+# ============================================
+# Moi hanh vi dang ngo cong mot so diem theo trong so (xem violation-weights ben duoi).
+# Diem tu giam dan theo thoi gian neu khong co hanh vi moi (decay), va tu leo thang
+# hanh dong khi vuot nguong - tranh phan ung qua tay voi 1 su co le nho, nhung van
+# dut khoat khi nhieu dau hieu cong don lai.
+violation:
+  decay-per-interval: 5          # diem giam moi lan decay
+  decay-interval-seconds: 60     # bao lau decay 1 lan
+  restrict-threshold: 150        # vuot nguong nay: khoa toan bo lenh cua nguoi choi tam thoi
+  kick-threshold: 250            # vuot nguong nay: tu dong kick
+  restrict-duration-seconds: 60  # thoi gian bi khoa lenh sau khi vuot restrict-threshold
+
+# Trong so diem cho tung loai hanh vi. Tang gia tri de he thong nhay hon voi loai do.
+violation-weights:
+  suspicious-keyword: 15         # go lenh chua tu khoa nhay cam
+  unregistered-command: 25       # lenh khong ton tai trong plugin/vanilla
+  injected-command: 100          # lenh da duoc xac nhan dang ky ngam sau khi server boot
+  unauthorized-op: 200           # duoc cap OP ngoai whitelist
+  chat-triggered-op: 300         # cap OP trai phep TUONG QUAN voi 1 tin nhan chat dang ngo truoc do
+
+# Phat hien tin nhan chat "giong chuoi kich hoat bi mat" (mot tu, khong khoang trang,
+# entropy cao) de doi chieu voi thoi diem cap OP - nhieu backdoor kich hoat bang chat
+# thay vi bang lenh nen CommandGuardListener khong bat duoc kieu nay.
+chat-trigger:
+  enabled: true
+  correlation-window-seconds: 15   # neu OP duoc cap trong khoang nay sau tin nhan dang ngo -> CRITICAL
+
+# Chup anh command map that cua Bukkit sau khi server khoi dong xong, roi dinh ky so sanh
+# de bat lenh duoc mot backdoor tu dang ky ngam qua Reflection (ke ca khi no co chu dich
+# delay vai giay de ne cac scanner quet luc boot).
+command-map-watch:
+  enabled: true
+  baseline-delay-seconds: 5
+  check-interval-seconds: 30
+
+# Bukkit/Paper does not provide an OP-change event, so this polls the operator list.
+# IMPORTANT: populate whitelisted-ops first. An empty list fails safe and does not strip OP.
+op-watch:
+  interval-seconds: 2
+
+# Tu kiem tra dinh ky xem listener/lenh cua chinh BackdoorGuard co bi mot plugin khac
+# am tham go bo hay hijack khong (mot backdoor "khon" co the co gang vo hieu hoa plugin
+# bao mat truoc khi hanh dong).
+self-integrity:
+  interval-seconds: 30
