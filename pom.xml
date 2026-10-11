@@ -29,7 +29,13 @@
             <scope>provided</scope>
         </dependency>
     </dependencies>
-
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <name>BackDoorGuard GitHub Packages</name>
+            <url>https://maven.pkg.github.com/taianh20102011/BackDoorGuard</url>
+        </repository>
+    </distributionManagement>
     <build>
         <finalName>${project.artifactId}-${project.version}</finalName>
         <resources>
