@@ -354,8 +354,17 @@ public final class JarScanner {
 
     private boolean isSelfJar(Path candidate) {
         try {
-            File self = plugin.getFile();
-            return self != null && candidate.toFile().getCanonicalFile().equals(self.getCanonicalFile());
+            // JavaPlugin#getFile() is protected in Bukkit/Paper. Resolve the plugin's
+            // loaded code source instead, then compare canonical filesystem identity.
+            var protectionDomain = plugin.getClass().getProtectionDomain();
+            var codeSource = protectionDomain == null ? null : protectionDomain.getCodeSource();
+            var location = codeSource == null ? null : codeSource.getLocation();
+            if (location == null || !"file".equalsIgnoreCase(location.getProtocol())) {
+                return false;
+            }
+
+            Path self = Path.of(location.toURI());
+            return Files.isRegularFile(self) && Files.isSameFile(candidate, self);
         } catch (Exception ignored) {
             return false;
         }
