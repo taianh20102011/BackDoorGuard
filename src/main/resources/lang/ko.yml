@@ -100,7 +100,7 @@
 "logger.discord-http-status": "Discord Webhook이 HTTP {status}를 반환했습니다."
 "plugin.command-missing": "plugin.yml에 'bguard' 명령어가 없어 관리 명령어를 사용할 수 없습니다."
 
-# BackdoorGuard 1.2.0 scanner, watcher and audit messages
+# BackdoorGuard 2.0.0 scanner, watcher and audit messages
 "commands.cache-usage": "&e사용법: /bguard cache clear"
 "commands.cache-cleared": "&a정상 검사 결과 캐시를 지웠습니다."
 "commands.audit-unavailable": "&c플러그인 감사 기능을 사용할 수 없습니다."

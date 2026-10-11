@@ -1,6 +1,7 @@
 package com.security.backdoorguard.scanner;
 
 import com.security.backdoorguard.BackdoorGuardPlugin;
+import com.security.backdoorguard.config.ConfigProfile;
 import com.security.backdoorguard.analysis.BytecodeAnalyzer;
 import com.security.backdoorguard.i18n.LanguageManager;
 import com.security.backdoorguard.logging.SecurityLogger;
@@ -21,6 +22,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -50,12 +52,15 @@ import java.util.zip.ZipInputStream;
 /** Bounded static security scanner. It alerts only and never deletes/modifies plugin files. */
 public final class JarScanner {
     private record Signature(String key, List<String> needles, double defaultWeight) {}
-    private record Finding(File file, String hash, double score, List<String> details, boolean blocked) {}
+    public record Finding(File file, String hash, double score, List<String> details, boolean blocked) {}
     private record FileResult(Finding finding, boolean trusted, boolean oversized, boolean skippedCache, String error) {}
     private record ScanOutput(ScanSummary summary, List<Finding> findings, List<String> errors) {}
     public record ScanSummary(int scanned, int alerts, int trustedSkipped, int oversizedSkipped, int cacheSkipped, int errors) {}
 
-    private static final String ANALYZER_VERSION = "classfile-v3";
+    private static final String ANALYZER_VERSION = "hybrid-classfile-v5";
+    private static final Set<String> LIBRARY_DAMPENABLE_SIGNATURES = Set.of(
+            "runtime", "process-builder", "network", "socket", "classloader", "script-engine",
+            "base64", "unsafe", "native-load", "deserialization", "jar-mutation");
     private static final List<Signature> SIGNATURES = List.of(
             new Signature("runtime", List.of("java/lang/Runtime", "java.lang.Runtime"), 18),
             new Signature("process-builder", List.of("java/lang/ProcessBuilder", "java.lang.ProcessBuilder"), 22),
@@ -96,6 +101,7 @@ public final class JarScanner {
     private final ExecutorService workers;
     private final Set<Path> fileScansInFlight = ConcurrentHashMap.newKeySet();
     private final Set<String> cleanCache = ConcurrentHashMap.newKeySet();
+    private final Map<String, Finding> flaggedReports = new ConcurrentHashMap<>();
     private final Object cacheLock = new Object();
     private final Path cacheFile;
     private volatile boolean scanning;
@@ -103,7 +109,7 @@ public final class JarScanner {
     public JarScanner(BackdoorGuardPlugin plugin, SecurityLogger logger) {
         this.plugin = plugin;
         this.logger = logger;
-        int threadCount = clamp(plugin.getConfig().getInt("jar-scanner.worker-threads", 2), 1, 4);
+        int threadCount = ConfigProfile.workerThreads(plugin);
         // Bound queued work so a burst of filesystem events cannot grow the heap without limit.
         // CallerRunsPolicy keeps pressure bounded and still runs scanner work off the Bukkit main thread.
         this.workers = new ThreadPoolExecutor(threadCount, threadCount, 0L, TimeUnit.MILLISECONDS,
@@ -118,6 +124,21 @@ public final class JarScanner {
     }
 
     public boolean isScanning() { return scanning; }
+
+    /** Latest in-memory findings, ordered from highest to lowest score. */
+    public List<Finding> allReports() {
+        List<Finding> reports = new ArrayList<>(flaggedReports.values());
+        reports.sort(Comparator.comparingDouble(Finding::score).reversed());
+        return List.copyOf(reports);
+    }
+
+    /** Finds the latest report by basename (case-insensitive). */
+    public Finding getReport(String jarName) {
+        if (jarName == null) return null;
+        return flaggedReports.values().stream()
+                .filter(report -> report.file().getName().equalsIgnoreCase(jarName))
+                .max(Comparator.comparingDouble(Finding::score)).orElse(null);
+    }
 
     public void shutdown() {
         coordinator.shutdownNow(); workers.shutdownNow();
@@ -160,28 +181,54 @@ public final class JarScanner {
 
     /** Queue a stable newly-created/changed plugin JAR for a bounded incremental scan. */
     public void scanFileAsync(Path candidate, String reason) {
-        if (!plugin.getConfig().getBoolean("jar-scanner.enabled", true) || !plugin.getConfig().getBoolean("jar-scanner.watch-enabled", true)) return;
+        scanFileAsync(candidate, reason, null);
+    }
+
+    public void scanFileAsync(Path candidate, String reason, Consumer<Finding> completion) {
+        if (!plugin.getConfig().getBoolean("jar-scanner.enabled", true)) return;
         Path root = plugin.getDataFolder().toPath().getParent().toAbsolutePath().normalize();
         Path path = candidate.toAbsolutePath().normalize();
-        if (!path.startsWith(root) || Files.isSymbolicLink(path) || !path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) return;
-        if (!fileScansInFlight.add(path)) return;
+        if (!path.startsWith(root) || Files.isSymbolicLink(path) || isSelfJar(path)
+                || !path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) return;
+        if (!fileScansInFlight.add(path)) {
+            dispatch(() -> { if (completion != null) completion.accept(flaggedReports.get(reportKey(path))); });
+            return;
+        }
         CompletableFuture.supplyAsync(() -> scanChangedFile(path), workers).whenComplete((result, failure) -> {
             fileScansInFlight.remove(path);
             if (failure != null) {
-                dispatch(() -> logger.warning(plugin.getMessages().get("scanner.scan-error", "file", path.getFileName(), "error", safeMessage(failure))));
+                dispatch(() -> {
+                    logger.warning(plugin.getMessages().get("scanner.scan-error", "file", path.getFileName(), "error", safeMessage(failure)));
+                    if (completion != null) completion.accept(null);
+                });
                 return;
             }
-            if (result == null) return;
+            if (result == null) {
+                dispatch(() -> { if (completion != null) completion.accept(null); });
+                return;
+            }
             saveCache();
+            if (result.finding() != null) flaggedReports.put(reportKey(path), result.finding());
+            else if (result.error() == null) flaggedReports.remove(reportKey(path));
             dispatch(() -> {
                 if (result.error() != null) logScanError(path.getFileName() + "\0" + result.error());
                 if (result.oversized()) logger.warning(plugin.getMessages().get("scanner.too-large-jar", "file", path.getFileName()));
                 if (result.finding() != null) publish(result.finding());
                 if (result.finding() == null && result.error() == null && !result.trusted() && !result.oversized() && !result.skippedCache()) {
-                    logger.info(plugin.getMessages().get("scanner.watch-clean", "file", path.getFileName(), "reason", reason));
+                    if (plugin.getConfig().getBoolean("jar-scanner.alert-on-every-new-jar", false)) {
+                        logger.alert(plugin.getMessages().get("watch.new-jar-title"),
+                                plugin.getMessages().get("watch.new-jar-detail", "file", path.getFileName(), "reason", reason));
+                    } else {
+                        logger.info(plugin.getMessages().get("scanner.watch-clean", "file", path.getFileName(), "reason", reason));
+                    }
                 }
+                if (completion != null) completion.accept(result.finding());
             });
         });
+    }
+
+    private static String reportKey(Path path) {
+        return path.toAbsolutePath().normalize().toString();
     }
 
     private FileResult scanChangedFile(Path path) {
@@ -210,12 +257,13 @@ public final class JarScanner {
         List<String> errors = new ArrayList<>();
         int scanned = 0, trusted = 0, oversized = 0, cached = 0;
         Path root = plugin.getDataFolder().toPath().getParent().toAbsolutePath().normalize();
-        boolean recursive = plugin.getConfig().getBoolean("jar-scanner.recursive", true);
+        boolean recursive = ConfigProfile.recursiveScan(plugin);
         int maxJars = clamp(plugin.getConfig().getInt("jar-scanner.max-jars-per-scan", 500), 1, 10000);
         List<Path> jars = new ArrayList<>();
         try (Stream<Path> paths = recursive ? Files.walk(root) : Files.list(root)) {
             paths.filter(Files::isRegularFile)
                     .filter(p -> !Files.isSymbolicLink(p))
+                    .filter(p -> !isSelfJar(p))
                     .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar"))
                     .sorted().limit(maxJars + 1L).forEach(jars::add);
         } catch (IOException e) {
@@ -234,7 +282,12 @@ public final class JarScanner {
                 FileResult result = futures.get(i).join();
                 if (result == null) continue;
                 if (result.error() != null) errors.add(jar.getFileName() + "\0" + result.error());
-                if (result.finding() != null) findings.add(result.finding());
+                if (result.finding() != null) {
+                    findings.add(result.finding());
+                    flaggedReports.put(reportKey(jar), result.finding());
+                } else if (result.error() == null) {
+                    flaggedReports.remove(reportKey(jar));
+                }
                 if (result.trusted()) trusted++;
                 if (result.oversized()) oversized++;
                 if (result.skippedCache()) cached++;
@@ -273,6 +326,41 @@ public final class JarScanner {
         }
     }
 
+    /** Find a JAR by basename inside plugins/, without following symbolic links or accepting paths. */
+    public File findJar(String requestedName) {
+        if (requestedName == null || requestedName.isBlank() || requestedName.contains("/")
+                || requestedName.contains("\\") || requestedName.equals(".") || requestedName.equals("..")) return null;
+        String name = requestedName.toLowerCase(Locale.ROOT).endsWith(".jar")
+                ? requestedName.toLowerCase(Locale.ROOT) : (requestedName + ".jar").toLowerCase(Locale.ROOT);
+        Path root = plugin.getDataFolder().toPath().getParent().toAbsolutePath().normalize();
+        boolean recursive = ConfigProfile.recursiveScan(plugin);
+        try (Stream<Path> paths = recursive ? Files.walk(root) : Files.list(root)) {
+            return paths.filter(Files::isRegularFile)
+                    .filter(path -> !Files.isSymbolicLink(path) && !isSelfJar(path))
+                    .filter(path -> path.getFileName().toString().equalsIgnoreCase(name))
+                    .filter(path -> {
+                        try { return path.toRealPath().startsWith(root.toRealPath()); }
+                        catch (IOException ex) { return false; }
+                    })
+                    .sorted((a, b) -> {
+                        int depth = Integer.compare(a.getNameCount(), b.getNameCount());
+                        return depth != 0 ? depth : a.toString().compareToIgnoreCase(b.toString());
+                    })
+                    .findFirst().map(Path::toFile).orElse(null);
+        } catch (IOException | RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private boolean isSelfJar(Path candidate) {
+        try {
+            File self = plugin.getFile();
+            return self != null && candidate.toFile().getCanonicalFile().equals(self.getCanonicalFile());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public String computeHash(File jarFile) throws IOException, NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         try (InputStream in = Files.newInputStream(jarFile.toPath())) {
@@ -290,7 +378,10 @@ public final class JarScanner {
         final Set<String> decodedPayloads = new LinkedHashSet<>();
         final Set<String> obfuscatedIdentifiers = new LinkedHashSet<>();
         final Set<String> suspiciousEndpoints = new LinkedHashSet<>();
+        final Map<String, String> urlIndicators = new LinkedHashMap<>();
         final Set<String> resourceFlags = new LinkedHashSet<>();
+        final Set<String> extraHosts = new LinkedHashSet<>();
+        final Set<String> libraryEntries = new HashSet<>();
         final Set<String> seenEntries = new HashSet<>();
         final List<String> structural = new ArrayList<>();
         long uncompressedRead;
@@ -300,17 +391,22 @@ public final class JarScanner {
         String pluginName;
         String expectedMainClass;
         boolean identityMismatch;
+        boolean loadBeforeGuard;
     }
 
     private Finding scanJar(File file, String hash) throws IOException {
         Context c = new Context();
+        for (String host : plugin.getConfig().getStringList("jar-scanner.extra-suspicious-hosts")) {
+            String normalized = normalizeHost(host);
+            if (!normalized.isBlank()) c.extraHosts.add(normalized);
+        }
         long maxEntryBytes = Math.min(mb(plugin.getConfig().getLong("jar-scanner.max-entry-size-mb", 8)), mb(64));
         long maxTotalBytes = mb(plugin.getConfig().getLong("jar-scanner.max-uncompressed-mb-per-jar", 512));
         int maxEntries = clamp(plugin.getConfig().getInt("jar-scanner.max-entries-per-jar", 40000), 100, 250000);
         int maxNested = clamp(plugin.getConfig().getInt("jar-scanner.max-nested-archives-per-jar", 8), 0, 64);
         int maxDepth = clamp(plugin.getConfig().getInt("jar-scanner.max-nested-depth", 2), 0, 4);
-        boolean scanResources = plugin.getConfig().getBoolean("jar-scanner.scan-resource-files", true);
-        boolean checkEncoded = plugin.getConfig().getBoolean("jar-scanner.encoded-string-check", true);
+        boolean scanResources = ConfigProfile.scanResources(plugin);
+        boolean checkEncoded = ConfigProfile.inspectEncodedContent(plugin);
         try (ZipFile zip = new ZipFile(file)) {
             Enumeration<? extends ZipEntry> entries = zip.entries();
             while (entries.hasMoreElements()) {
@@ -352,6 +448,12 @@ public final class JarScanner {
             Set<String> classes = c.hits.get(signature.key());
             if (classes != null && !classes.isEmpty()) {
                 double weight = ruleWeight(signature.key(), signature.defaultWeight());
+                boolean allLibraryCode = classes.stream().allMatch(c.libraryEntries::contains);
+                if (allLibraryCode && LIBRARY_DAMPENABLE_SIGNATURES.contains(signature.key())) {
+                    double multiplier = Math.max(0.0, Math.min(1.0,
+                            plugin.getConfig().getDouble("jar-scanner.library-multiplier", 0.3)));
+                    weight *= multiplier;
+                }
                 score += weight;
                 details.add(plugin.getMessages().get("scanner.signal-line", "description",
                         plugin.getMessages().get("scanner.signature." + signature.key()), "count", classes.size()));
@@ -374,9 +476,28 @@ public final class JarScanner {
             score += configuredWeight("weights.obfuscated-identifier", 3, 15);
             details.add(plugin.getMessages().get("scanner.obfuscation-line", "count", c.obfuscatedIdentifiers.size()));
         }
-        if (!c.suspiciousEndpoints.isEmpty()) {
+        for (Map.Entry<String, String> indicator : c.urlIndicators.entrySet()) {
+            String kind = indicator.getKey();
+            double fallbackWeight = switch (kind) {
+                case "webhook" -> 25;
+                case "telegram" -> 25;
+                case "paste" -> 20;
+                case "tunnel" -> 25;
+                case "ip" -> 15;
+                case "custom" -> 20;
+                default -> 10;
+            };
+            score += configuredWeight("weights.url-" + kind, fallbackWeight, 100);
+            details.add(plugin.getMessages().get("scanner.url-line", "description",
+                    plugin.getMessages().get("scanner.url." + kind), "where", indicator.getValue()));
+        }
+        if (!c.suspiciousEndpoints.isEmpty() && c.urlIndicators.isEmpty()) {
             score += configuredWeight("weights.suspicious-endpoint", 5, 20);
             details.add(plugin.getMessages().get("scanner.endpoint-line", "count", c.suspiciousEndpoints.size()));
+        }
+        if (c.loadBeforeGuard) {
+            score += configuredWeight("weights.load-before-security", 30, 100);
+            details.add(plugin.getMessages().get("scanner.loadbefore-security"));
         }
         for (String structural : new LinkedHashSet<>(c.structural)) {
             score += structureWeight(structural);
@@ -418,7 +539,7 @@ public final class JarScanner {
 
         // Opt-in narrow exceptions keyed by full file SHA-256; only generic indicator weights are reduced.
         score = applySelectiveExceptions(hash, c, score, details);
-        double threshold = Math.max(1, plugin.getConfig().getDouble("jar-scanner.alert-threshold", 40));
+        double threshold = ConfigProfile.alertThreshold(plugin);
         if (score < threshold) return null;
         details.add(plugin.getMessages().get("scanner.hash-line", "hash", hash));
         details.add(plugin.getMessages().get("scanner.trust-tip", "file", file.getName()));
@@ -431,6 +552,12 @@ public final class JarScanner {
     private void inspectEntry(String name, byte[] bytes, int depth, Context c, int maxNested, int maxDepth,
                               long maxEntryBytes, long maxTotalBytes, int maxEntries, boolean scanResources, boolean checkEncoded) {
         String lower = name.toLowerCase(Locale.ROOT);
+        if (!lower.endsWith(".class") && isClassBytes(bytes)) c.structural.add("hidden-class");
+        if (isNativeBytes(bytes)) {
+            boolean expectedExtension = lower.endsWith(".dll") || lower.endsWith(".so") || lower.endsWith(".dylib")
+                    || lower.endsWith(".jnilib") || lower.endsWith(".exe");
+            c.structural.add(expectedExtension ? "native-binary" : "hidden-native-binary");
+        }
         boolean archiveCandidate = isArchiveName(lower) || isZipBytes(bytes);
         if (archiveCandidate && (depth >= maxDepth || c.nestedArchives >= maxNested)) {
             c.structural.add("nested-entry-limit");
@@ -478,12 +605,14 @@ public final class JarScanner {
                 return;
             }
             String apiContent = analysis.apiReferencesText();
+            if (LibraryPackages.isLibrary(analysis.className())) c.libraryEntries.add(name);
             if (looksObfuscatedIdentifier(analysis.className())) c.obfuscatedIdentifiers.add(name);
             for (Signature signature : SIGNATURES) {
                 if (containsAny(apiContent, signature.needles())) c.hits.computeIfAbsent(signature.key(), k -> new LinkedHashSet<>()).add(name);
             }
             String values = String.join("\n", analysis.strings());
-            if (SUSPICIOUS_ENDPOINT.matcher(values).find()) c.suspiciousEndpoints.add(name);
+            classifyUrls(values, name, c);
+            if (SUSPICIOUS_ENDPOINT.matcher(values).find() || containsExtraHost(values, c.extraHosts)) c.suspiciousEndpoints.add(name);
             if (CREDENTIAL_TERMS.matcher(values).find()) c.hits.computeIfAbsent("secret-terms", k -> new LinkedHashSet<>()).add(name);
             if (RESOURCE_INDICATOR.matcher(values).find()) c.resourceFlags.add(name);
             if (checkEncoded && c.encoded.size() < MAX_ENCODED_HITS && scanForEncodedStrings(values, c.encoded) > 0) {
@@ -492,10 +621,11 @@ public final class JarScanner {
             if (checkEncoded && c.encoded.size() < MAX_ENCODED_HITS) inspectEncodedPayloads(values, name, c, scanResources);
         } else if (scanResources && isTextResource(lower)) {
             String content = new String(bytes, StandardCharsets.UTF_8);
-            if (lower.equals("plugin.yml")) parsePluginMetadata(content, c);
+            if (lower.equals("plugin.yml") || lower.equals("paper-plugin.yml")) parsePluginMetadata(content, c);
+            classifyUrls(content, name, c);
             Matcher matcher = RESOURCE_INDICATOR.matcher(content);
             if (matcher.find()) c.resourceFlags.add(name);
-            if (SUSPICIOUS_ENDPOINT.matcher(content).find()) c.suspiciousEndpoints.add(name);
+            if (SUSPICIOUS_ENDPOINT.matcher(content).find() || containsExtraHost(content, c.extraHosts)) c.suspiciousEndpoints.add(name);
             if (CREDENTIAL_TERMS.matcher(content).find()) c.hits.computeIfAbsent("secret-terms", k -> new LinkedHashSet<>()).add(name);
             if (checkEncoded && c.encoded.size() < MAX_ENCODED_HITS && scanForEncodedStrings(content, c.encoded) > 0) {
                 c.hits.computeIfAbsent("encoded", k -> new LinkedHashSet<>()).add(name);
@@ -531,13 +661,14 @@ public final class JarScanner {
             String decodedText = new String(decoded, StandardCharsets.UTF_8);
             if (!looksMostlyPrintable(decodedText)) continue;
             String lower = decodedText.toLowerCase(Locale.ROOT);
+            classifyUrls(decodedText, entryName + " [decoded]", c);
             boolean hasExecutableMarker = lower.contains("java/lang/runtime") || lower.contains("java.lang.runtime")
                     || lower.contains("processbuilder") || lower.contains("runtime.getruntime")
                     || lower.contains("defineclass") || lower.contains("loadclass")
                     || lower.contains("premain-class") || lower.matches("(?s).*setop.{0,40}(true|1).*" );
             boolean hasCredentialExfilMarker = CREDENTIAL_TERMS.matcher(decodedText).find()
                     && (lower.contains("http://") || lower.contains("https://") || lower.contains("java/net/socket"));
-            boolean hasEndpoint = SUSPICIOUS_ENDPOINT.matcher(decodedText).find();
+            boolean hasEndpoint = SUSPICIOUS_ENDPOINT.matcher(decodedText).find() || containsExtraHost(decodedText, c.extraHosts);
             if (!hasExecutableMarker && !hasCredentialExfilMarker) continue;
 
             c.decodedPayloads.add(entryName);
@@ -574,7 +705,33 @@ public final class JarScanner {
         int slash = internalName.lastIndexOf('/');
         String simple = slash >= 0 ? internalName.substring(slash + 1) : internalName;
         // Deliberately conservative: a few short names are common in legitimate code.
-        return simple.length() <= 2 && simple.matches("[A-Za-z_$][A-Za-z0-9_$]*");
+        if (simple.length() <= 2 && simple.matches("[A-Za-z_$][A-Za-z0-9_$]*")) return true;
+        if (simple.length() >= 4) {
+            boolean confusableOnly = true;
+            for (int i = 0; i < simple.length(); i++) {
+                char ch = simple.charAt(i);
+                if (ch < 0x21 || ch > 0x7e) return true;
+                if ("Il1O0_".indexOf(ch) < 0) confusableOnly = false;
+            }
+            if (confusableOnly) return true;
+        }
+        return false;
+    }
+
+    private void classifyUrls(String content, String entryName, Context context) {
+        Map<UrlClassifier.Kind, String> found = UrlClassifier.classifyAll(content, new ArrayList<>(context.extraHosts));
+        for (Map.Entry<UrlClassifier.Kind, String> entry : found.entrySet()) {
+            String key = entry.getKey().name().toLowerCase(Locale.ROOT);
+            context.urlIndicators.putIfAbsent(key, entry.getValue() + " @ " + entryName);
+        }
+    }
+
+    private static boolean isNativeBytes(byte[] bytes) {
+        if (bytes == null || bytes.length < 4) return false;
+        int magic = ((bytes[0] & 0xff) << 24) | ((bytes[1] & 0xff) << 16)
+                | ((bytes[2] & 0xff) << 8) | (bytes[3] & 0xff);
+        return magic == 0x7f454c46 || (bytes[0] == 'M' && bytes[1] == 'Z')
+                || magic == 0xfeedface || magic == 0xfeedfacf || magic == 0xcefaedfe || magic == 0xcffaedfe;
     }
 
     private void parsePluginMetadata(String content, Context c) {
@@ -583,6 +740,11 @@ public final class JarScanner {
             if (trimmed.startsWith("main:")) c.mainClass = yamlScalar(trimmed.substring(5));
             if (trimmed.startsWith("name:")) c.pluginName = yamlScalar(trimmed.substring(5));
         }
+        // A plugin explicitly trying to load before the guard can create a startup blind spot.
+        // It is only a score-based hint because unusual load order may be legitimate.
+        String lower = content.toLowerCase(Locale.ROOT);
+        Matcher section = Pattern.compile("(?ms)^(?:loadbefore|load-before)\\s*:\\s*(.*?)(?=^[^\\s#][^:\\r\\n]*\\s*:|\\z)").matcher(lower);
+        if (section.find() && section.group(1).contains("backdoorguard")) c.loadBeforeGuard = true;
     }
 
     private static String yamlScalar(String raw) {
@@ -600,16 +762,56 @@ public final class JarScanner {
     private void checkKnownPluginIdentity(Context c) {
         if (c.pluginName == null || c.mainClass == null) return;
         var known = plugin.getConfig().getConfigurationSection("known-plugin-identities");
-        if (known == null) return;
-        for (String name : known.getKeys(false)) {
-            if (!name.equalsIgnoreCase(c.pluginName)) continue;
-            String expected = known.getString(name, "").trim();
-            if (expected.isEmpty()) return;
-            c.expectedMainClass = expected;
-            c.identityMismatch = !expected.equals(c.mainClass);
-            if (c.identityMismatch) c.structural.add("plugin-identity-mismatch");
-            return;
+        if (known != null) {
+            for (String name : known.getKeys(false)) {
+                if (!name.equalsIgnoreCase(c.pluginName)) continue;
+                String expected = known.getString(name, "").trim();
+                if (expected.isEmpty()) return;
+                c.expectedMainClass = expected;
+                c.identityMismatch = !expected.equals(c.mainClass);
+                if (c.identityMismatch) c.structural.add("plugin-identity-mismatch");
+                return;
+            }
         }
+        String impersonated = KnownPlugins.impersonated(c.pluginName, c.mainClass);
+        if (impersonated != null) {
+            c.expectedMainClass = KnownPlugins.expectedPackage(c.pluginName);
+            c.identityMismatch = true;
+            c.structural.add("plugin-identity-mismatch");
+        }
+    }
+
+    private static String normalizeHost(String input) {
+        if (input == null) return "";
+        String host = input.trim().toLowerCase(Locale.ROOT);
+        if (host.isEmpty()) return "";
+        host = host.replaceFirst("^(?:https?://)", "");
+        if (host.startsWith("*.")) host = host.substring(2);
+        int slash = host.indexOf('/');
+        if (slash >= 0) host = host.substring(0, slash);
+        int colon = host.indexOf(':');
+        if (colon >= 0 && host.indexOf(']') < colon) host = host.substring(0, colon);
+        return host.replaceAll("[^a-z0-9._-]", "");
+    }
+
+    private static boolean containsExtraHost(String content, Set<String> hosts) {
+        if (content == null || content.isEmpty() || hosts.isEmpty()) return false;
+        String lower = content.toLowerCase(Locale.ROOT);
+        for (String host : hosts) {
+            int from = 0;
+            while ((from = lower.indexOf(host, from)) >= 0) {
+                int end = from + host.length();
+                boolean leftOk = from == 0 || !isHostChar(lower.charAt(from - 1));
+                boolean rightOk = end >= lower.length() || !isHostChar(lower.charAt(end));
+                if (leftOk && rightOk) return true;
+                from = Math.max(end, from + 1);
+            }
+        }
+        return false;
+    }
+
+    private static boolean isHostChar(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-';
     }
 
     private void registerStructuralEntry(String name, long size, long compressed, Context c) {
@@ -632,6 +834,9 @@ public final class JarScanner {
             case "entry-size-limit" -> configuredWeight("weights.entry-size-limit", 5, 15);
             case "nested-archive" -> configuredWeight("weights.nested-archive", 2, 6);
             case "plugin-identity-mismatch" -> configuredWeight("weights.plugin-identity-mismatch", 40, 100);
+            case "hidden-class" -> configuredWeight("weights.hidden-class", 15, 50);
+            case "native-binary" -> configuredWeight("weights.native-binary", 8, 30);
+            case "hidden-native-binary" -> configuredWeight("weights.hidden-native-binary", 25, 60);
             default -> 0;
         };
     }
@@ -674,9 +879,18 @@ public final class JarScanner {
     private String cacheKey(String hash) {
         Map<String, String> values = new TreeMap<>();
         values.put("analyzer", ANALYZER_VERSION);
-        values.put("threshold", Double.toString(plugin.getConfig().getDouble("jar-scanner.alert-threshold", 40)));
-        values.put("scan-resources", Boolean.toString(plugin.getConfig().getBoolean("jar-scanner.scan-resource-files", true)));
-        values.put("scan-encoded", Boolean.toString(plugin.getConfig().getBoolean("jar-scanner.encoded-string-check", true)));
+        values.put("profile", ConfigProfile.profile(plugin));
+        values.put("threshold", Double.toString(ConfigProfile.alertThreshold(plugin)));
+        values.put("high-threshold", Double.toString(ConfigProfile.highThreshold(plugin)));
+        values.put("critical-threshold", Double.toString(ConfigProfile.criticalThreshold(plugin)));
+        values.put("library-multiplier", Double.toString(plugin.getConfig().getDouble("jar-scanner.library-multiplier", 0.3)));
+        for (String key : List.of("url-webhook", "url-telegram", "url-paste", "url-tunnel", "url-ip", "url-custom",
+                "hidden-class", "native-binary", "hidden-native-binary", "load-before-security")) {
+            values.put("weights." + key, Double.toString(plugin.getConfig().getDouble("jar-scanner.weights." + key, -1)));
+        }
+        values.put("scan-resources", Boolean.toString(ConfigProfile.scanResources(plugin)));
+        values.put("scan-encoded", Boolean.toString(ConfigProfile.inspectEncodedContent(plugin)));
+        values.put("extra-hosts", plugin.getConfig().getStringList("jar-scanner.extra-suspicious-hosts").toString());
         values.put("max-entry", Long.toString(plugin.getConfig().getLong("jar-scanner.max-entry-size-mb", 8)));
         values.put("max-uncompressed", Long.toString(plugin.getConfig().getLong("jar-scanner.max-uncompressed-mb-per-jar", 512)));
         values.put("max-entries", Integer.toString(plugin.getConfig().getInt("jar-scanner.max-entries-per-jar", 40000)));
@@ -736,12 +950,20 @@ public final class JarScanner {
         }
     }
 
+    public Severity classifyScore(double score) {
+        if (score >= ConfigProfile.criticalThreshold(plugin)) return Severity.CRITICAL;
+        if (score >= ConfigProfile.highThreshold(plugin)) return Severity.HIGH;
+        if (score >= (ConfigProfile.alertThreshold(plugin) + ConfigProfile.highThreshold(plugin)) / 2.0) return Severity.MEDIUM;
+        return Severity.LOW;
+    }
+
     private void publish(Finding finding) {
         LanguageManager messages = plugin.getMessages();
         StringBuilder details = new StringBuilder();
         for (String detail : finding.details()) details.append(detail);
         logger.alert(messages.plain("scanner.report-title", "file", finding.file().getName()),
-                messages.plain("scanner.total-score", "score", Math.round(finding.score()), "details", details));
+                messages.plain("scanner.total-score", "score", Math.round(finding.score()),
+                        "severity", messages.get(classifyScore(finding.score()).key()), "details", details));
     }
 
     private void logScanError(String error) {
@@ -758,7 +980,8 @@ public final class JarScanner {
 
     private static boolean hasClassOrZipMagic(ZipFile zip, ZipEntry entry) throws IOException {
         try (InputStream in = zip.getInputStream(entry)) {
-            return isClassOrZipMagic(in.readNBytes(4));
+            byte[] header = in.readNBytes(4);
+            return isClassOrZipMagic(header) || isNativeBytes(header);
         }
     }
 

@@ -3,6 +3,31 @@
 # 'language' is the fallback/default for console and players with unknown locale.
 # Player-facing admin responses and staff alert wrappers use each player's client locale when supported.
 # Supported: en, vi, es, zh_CN, fr, de, pt_BR, ru, ja, ko
+# ============================================
+# QUICK SETUP: beginner or advanced
+# ============================================
+# newbie: the simple options below control sensitivity, scan scope, load and staff notifications.
+# senior: the detailed settings under jar-scanner / plugin-audit / jvm-audit / violation are used directly.
+# Change with /bguard profile <newbie|senior>, or edit this value and run /bguard reload.
+setup:
+  profile: newbie
+  newbie:
+    # low-noise = fewer false positives (threshold 55); balanced = default (40); strict = more sensitive (28).
+    sensitivity: balanced
+    # Look in plugin subfolders such as plugins/update/ and nested plugin folders.
+    scan-subfolders: true
+    # Rescan new/changed JARs while the server is running.
+    watch-for-file-changes: true
+    # Inspect plugin.yml, configs, manifests, scripts and other text resources inside JARs.
+    scan-text-resources: true
+    # Inspect bounded encoded strings/payloads for suspicious indicators.
+    inspect-encoded-content: true
+    # low = smallest impact; balanced = recommended; fast = up to 4 scan workers.
+    scan-speed: balanced
+    # Send security alerts to online staff and periodically verify loaded plugin sources.
+    notify-staff: true
+    audit-runtime: true
+
 language: "vi"
 # ============================================
 
@@ -51,10 +76,18 @@ jar-scanner:
   encoded-string-check: true
   # Higher score means more independent suspicious indicators; this is alert-only.
   alert-threshold: 40
+  high-threshold: 70
+  critical-threshold: 120
+  # Generic API hits entirely inside common shaded libraries are multiplied by this value (0.0–1.0).
+  library-multiplier: 0.3
 
   worker-threads: 2
   watch-enabled: true
   watch-debounce-ms: 1500
+  # If true, staff are notified about every added/changed JAR, even when it scores below the alert threshold.
+  alert-on-every-new-jar: false
+  # Add hostnames only after verifying they are suspicious; entries can also match encoded payloads after bounded decoding.
+  extra-suspicious-hosts: []
   max-nested-archives-per-jar: 8
   max-nested-depth: 2
   weights:
@@ -98,6 +131,16 @@ jar-scanner:
     entry-size-limit: 5
     nested-archive: 2
     plugin-identity-mismatch: 40
+    url-webhook: 25
+    url-telegram: 25
+    url-paste: 20
+    url-tunnel: 25
+    url-ip: 15
+    url-custom: 20
+    hidden-class: 15
+    native-binary: 8
+    hidden-native-binary: 25
+    load-before-security: 30
   combinations:
     execution-network: 20
     reflection-op: 24
@@ -138,11 +181,14 @@ known-plugin-identities: {}
 
 # Runtime plugin identity/source and JVM agent flags are audited; alerts are informational.
 plugin-audit:
+  enabled: true
   baseline-delay-seconds: 15
   check-interval-seconds: 60
   check-source-path: true
 jvm-audit:
   enabled: true
+  # If a trusted monitoring agent is intentionally used, add a unique substring from its JVM argument here.
+  allowed-agents: []
 
 
 # Optional SHA-256 list of known-malicious JARs. A match raises a critical alert even if trusted; it does not automatically disable or delete the plugin.

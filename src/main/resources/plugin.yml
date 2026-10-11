@@ -11,12 +11,12 @@ author: TaiAnh
 # softdepend/loadbefore) chu Bukkit khong co "do uu tien" tuyet doi - neu can BackdoorGuard
 # chac chan nap truoc mot plugin cu the nao do, khai bao them "loadbefore: [TenPluginDo]".
 load: STARTUP
-description: Detects suspicious plugin JARs, hidden commands, and unauthorized operator changes.
+description: Hybrid JAR scanner and runtime security auditor with beginner and advanced configuration profiles.
 
 commands:
   bguard:
     description: BackdoorGuard administration command
-    usage: /bguard <reload|status|scan|trust <jar>|vl <player>|cache clear|audit>
+    usage: "/bguard <reload|status|scan [jar|all|force]|list|info <jar>|trust <jar>|untrust <jar|sha256>|profile <newbie|senior>|lang <code>|vl <player>|cache clear|audit>"
     permission: backdoorguard.admin
 
 permissions:

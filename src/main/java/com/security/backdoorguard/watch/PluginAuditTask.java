@@ -6,6 +6,7 @@ import org.bukkit.plugin.Plugin;
 
 import java.net.URI;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -17,6 +18,7 @@ public final class PluginAuditTask implements Runnable {
     private final Path pluginsRoot;
     private final Map<String, String> baseline = new LinkedHashMap<>();
     private final Map<String, String> externalSources = new LinkedHashMap<>();
+    private final Map<String, String> missingJarSources = new LinkedHashMap<>();
     private boolean captured;
 
     public PluginAuditTask(BackdoorGuardPlugin plugin, SecurityLogger logger) {
@@ -60,6 +62,18 @@ public final class PluginAuditTask implements Runnable {
                 URI uri = loaded.getClass().getProtectionDomain().getCodeSource().getLocation().toURI();
                 Path source = Path.of(uri).toAbsolutePath().normalize();
                 String name = key(loaded);
+                boolean jarSource = source.getFileName() != null
+                        && source.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar");
+                if (jarSource && !Files.isRegularFile(source)) {
+                    String previous = missingJarSources.put(name, source.toString());
+                    if (alert && !source.toString().equals(previous)) {
+                        logger.alert(plugin.getMessages().get("audit.missing-jar-title"),
+                                plugin.getMessages().get("audit.missing-jar-detail", "name", loaded.getName(), "file", safePath(source)));
+                    }
+                    externalSources.remove(name);
+                    continue;
+                }
+                missingJarSources.remove(name);
                 if (!source.startsWith(pluginsRoot)) {
                     String previous = externalSources.put(name, source.toString());
                     if (alert && !source.toString().equals(previous)) {

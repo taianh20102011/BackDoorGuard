@@ -44,8 +44,13 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
                 sender.sendMessage(message(sender, "commands.reload"));
             }
             case "status" -> handleStatus(sender);
-            case "scan" -> handleScan(sender);
+            case "scan" -> handleScan(sender, args);
+            case "list" -> handleList(sender);
+            case "info" -> handleInfo(sender, args);
             case "trust" -> handleTrust(sender, args);
+            case "untrust" -> handleUntrust(sender, args);
+            case "profile" -> handleProfile(sender, args);
+            case "lang" -> handleLanguage(sender, args);
             case "vl" -> handleViolation(sender, args);
             case "cache" -> handleCache(sender, args);
             case "audit" -> handleAudit(sender);
@@ -54,8 +59,19 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
         return true;
     }
 
-    private void handleScan(CommandSender sender) {
+    private void handleScan(CommandSender sender, String[] args) {
         JarScanner scanner = plugin.getJarScanner();
+        if (args.length >= 2 && !args[1].equalsIgnoreCase("all") && !args[1].equalsIgnoreCase("force")) {
+            File file = scanner.findJar(args[1]);
+            if (file == null) {
+                sender.sendMessage(message(sender, "commands.scan-file-not-found", "file", args[1]));
+                return;
+            }
+            sender.sendMessage(message(sender, "commands.scan-file-start", "file", file.getName()));
+            scanner.scanFileAsync(file.toPath(), "manual command", finding -> sendFinding(sender, finding));
+            return;
+        }
+        if (args.length >= 2 && args[1].equalsIgnoreCase("force")) scanner.clearCache();
         if (scanner.isScanning()) {
             sender.sendMessage(message(sender, "commands.scan-busy"));
             return;
@@ -81,6 +97,49 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
                 plugin.getJarScanner().isScanning() ? "SCANNING" : "IDLE"));
         sender.sendMessage(message(sender, "commands.status-file-watcher", "state",
                 plugin.getPluginJarWatcher() != null && plugin.getPluginJarWatcher().isRunning() ? "ON" : "OFF"));
+        sender.sendMessage(message(sender, "commands.status-profile", "profile",
+                plugin.getConfig().getString("setup.profile", "newbie")));
+    }
+
+    private void handleList(CommandSender sender) {
+        List<JarScanner.Finding> reports = plugin.getJarScanner().allReports();
+        if (reports.isEmpty()) {
+            sender.sendMessage(message(sender, "commands.list-empty"));
+            return;
+        }
+        sender.sendMessage(message(sender, "commands.list-header", "count", reports.size()));
+        for (JarScanner.Finding finding : reports) {
+            sender.sendMessage(message(sender, "commands.list-entry", "file", finding.file().getName(),
+                    "score", String.format(Locale.ROOT, "%.0f", finding.score())));
+        }
+    }
+
+    private void handleInfo(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(message(sender, "commands.info-usage"));
+            return;
+        }
+        File file = plugin.getJarScanner().findJar(args[1]);
+        if (file == null) {
+            sender.sendMessage(message(sender, "commands.scan-file-not-found", "file", args[1]));
+            return;
+        }
+        sender.sendMessage(message(sender, "commands.scan-file-start", "file", file.getName()));
+        plugin.getJarScanner().scanFileAsync(file.toPath(), "manual info", finding -> {
+            if (finding == null) {
+                sender.sendMessage(message(sender, "commands.info-clean", "file", file.getName()));
+            } else {
+                sendFinding(sender, finding);
+            }
+        });
+    }
+
+    private void sendFinding(CommandSender sender, JarScanner.Finding finding) {
+        if (finding == null) return;
+        sender.sendMessage(message(sender, "commands.info-header", "file", finding.file().getName(),
+                "score", String.format(Locale.ROOT, "%.0f", finding.score()),
+                "severity", plugin.getMessages().get(plugin.getJarScanner().classifyScore(finding.score()).key())));
+        for (String detail : finding.details()) sender.sendMessage(detail);
     }
 
     private void handleTrust(CommandSender sender, String[] args) {
@@ -104,14 +163,13 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
         final long originalSize;
         final long originalModified;
         try {
-            File pluginsDir = plugin.getDataFolder().getParentFile().getCanonicalFile();
-            File candidate = new File(pluginsDir, jarName).getCanonicalFile();
-            if (!candidate.getParentFile().equals(pluginsDir) || !candidate.isFile()
+            File candidate = plugin.getJarScanner().findJar(jarName);
+            if (candidate == null || !candidate.isFile()
                     || !Files.isRegularFile(candidate.toPath()) || Files.isSymbolicLink(candidate.toPath())) {
                 sender.sendMessage(message(sender, "commands.trust-not-found", "file", jarName));
                 return;
             }
-            jarFile = candidate;
+            jarFile = candidate.getCanonicalFile();
             originalSize = Files.size(jarFile.toPath());
             originalModified = Files.getLastModifiedTime(jarFile.toPath()).toMillis();
         } catch (Exception e) {
@@ -160,6 +218,89 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
     }
 
 
+    private void handleUntrust(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(message(sender, "commands.untrust-usage"));
+            return;
+        }
+        String supplied = args[1].trim();
+        if (supplied.matches("(?i)[a-f0-9]{64}")) {
+            removeTrustedHash(sender, supplied.toLowerCase(Locale.ROOT), supplied);
+            return;
+        }
+        if (supplied.contains("/") || supplied.contains("\\") || supplied.contains(":")
+                || supplied.contains("..") || !supplied.matches("(?i)[A-Za-z0-9 _().-]+(?:\\.jar)?")) {
+            sender.sendMessage(message(sender, "commands.trust-invalid-name"));
+            return;
+        }
+        File jar = plugin.getJarScanner().findJar(supplied);
+        if (jar == null) {
+            sender.sendMessage(message(sender, "commands.untrust-not-found", "file", supplied));
+            return;
+        }
+        sender.sendMessage(message(sender, "commands.untrust-hashing", "file", jar.getName()));
+        JarScanner scanner = plugin.getJarScanner();
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try { return scanner.computeHash(jar); }
+            catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
+        }).whenComplete((hash, failure) -> {
+            Runnable complete = () -> {
+                if (!plugin.isEnabled()) return;
+                if (failure != null || hash == null) {
+                    Throwable cause = failure;
+                    while (cause != null && cause.getCause() != null) cause = cause.getCause();
+                    sender.sendMessage(message(sender, "commands.trust-error", "error",
+                            cause == null || cause.getMessage() == null ? "Hashing failed" : cause.getMessage()));
+                } else {
+                    removeTrustedHash(sender, hash, jar.getName());
+                }
+            };
+            try { Bukkit.getScheduler().runTask(plugin, complete); }
+            catch (IllegalStateException ignored) { }
+        });
+    }
+
+    private void removeTrustedHash(CommandSender sender, String hash, String displayName) {
+        List<String> trusted = new ArrayList<>(plugin.getConfig().getStringList("trusted-jar-hashes"));
+        boolean removed = trusted.removeIf(existing -> existing != null && existing.equalsIgnoreCase(hash));
+        if (!removed) {
+            sender.sendMessage(message(sender, "commands.untrust-not-found", "file", displayName));
+            return;
+        }
+        plugin.getConfig().set("trusted-jar-hashes", trusted);
+        plugin.saveConfig();
+        sender.sendMessage(message(sender, "commands.untrust-removed", "file", displayName));
+    }
+
+    private void handleProfile(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(message(sender, "commands.profile-usage"));
+            return;
+        }
+        String profile = args[1].toLowerCase(Locale.ROOT);
+        if (!profile.equals("newbie") && !profile.equals("senior")) {
+            sender.sendMessage(message(sender, "commands.profile-usage"));
+            return;
+        }
+        plugin.getConfig().set("setup.profile", profile);
+        plugin.saveConfig();
+        plugin.reloadPluginConfig();
+        sender.sendMessage(message(sender, "commands.profile-changed", "profile", profile));
+    }
+
+    private void handleLanguage(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(message(sender, "commands.lang-usage"));
+            return;
+        }
+        if (!plugin.getMessages().isSupported(args[1])) {
+            sender.sendMessage(message(sender, "commands.lang-unknown", "language", args[1]));
+            return;
+        }
+        plugin.getMessages().setLanguage(args[1]);
+        sender.sendMessage(message(sender, "commands.lang-changed", "language", plugin.getMessages().getLanguage()));
+    }
+
     private void handleCache(CommandSender sender, String[] args) {
         if (args.length < 2 || !args[1].equalsIgnoreCase("clear")) {
             sender.sendMessage(message(sender, "commands.cache-usage"));
@@ -195,7 +336,7 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
                                       @NotNull String alias, String[] args) {
         if (!sender.hasPermission("backdoorguard.admin")) return List.of();
         if (args.length == 1) {
-            return List.of("reload", "status", "scan", "trust", "vl", "cache", "audit").stream()
+            return List.of("reload", "status", "scan", "list", "info", "trust", "untrust", "profile", "lang", "vl", "cache", "audit").stream()
                     .filter(option -> option.startsWith(args[0].toLowerCase(Locale.ROOT)))
                     .collect(Collectors.toList());
         }
@@ -207,14 +348,28 @@ public final class BackdoorGuardCommand implements CommandExecutor, TabCompleter
                     .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT)))
                     .collect(Collectors.toList());
         }
-        if (args.length == 2 && args[0].equalsIgnoreCase("trust")) {
-            File directory = plugin.getDataFolder().getParentFile();
-            File[] jars = directory.listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".jar"));
-            if (jars == null) return List.of();
+        if (args.length == 2 && (args[0].equalsIgnoreCase("trust") || args[0].equalsIgnoreCase("untrust") || args[0].equalsIgnoreCase("scan") || args[0].equalsIgnoreCase("info"))) {
             String prefix = args[1].toLowerCase(Locale.ROOT);
             List<String> names = new ArrayList<>();
-            for (File jar : jars) if (jar.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) names.add(jar.getName());
+            File directory = plugin.getDataFolder().getParentFile();
+            try (var paths = (com.security.backdoorguard.config.ConfigProfile.recursiveScan(plugin)
+                    ? Files.walk(directory.toPath()) : Files.list(directory.toPath()))) {
+                paths.filter(Files::isRegularFile)
+                        .filter(path -> !Files.isSymbolicLink(path))
+                        .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar"))
+                        .map(path -> path.getFileName().toString())
+                        .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(prefix))
+                        .distinct().limit(200).forEach(names::add);
+            } catch (IOException ignored) { /* Tab completion is best-effort. */ }
+            if (args[0].equalsIgnoreCase("scan") && "all".startsWith(prefix)) names.add("all");
             return names;
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("profile")) {
+            return List.of("newbie", "senior").stream().filter(p -> p.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("lang")) {
+            return java.util.Arrays.stream(com.security.backdoorguard.i18n.LanguageManager.SUPPORTED)
+                    .filter(code -> code.toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         }
         return List.of();
     }

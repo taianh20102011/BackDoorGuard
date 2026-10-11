@@ -80,6 +80,19 @@ public final class LanguageManager {
         return language;
     }
 
+    public boolean isSupported(String code) {
+        if (code == null) return false;
+        String normalized = normalize(code);
+        return SUPPORTED_AS_NORMALIZED.contains(normalized);
+    }
+
+    public void setLanguage(String code) {
+        if (!isSupported(code)) throw new IllegalArgumentException("Unsupported language: " + code);
+        plugin.getConfig().set("language", normalize(code));
+        plugin.saveConfig();
+        reload();
+    }
+
     public String get(String key, Object... replacements) {
         return format(selected, key, replacements);
     }

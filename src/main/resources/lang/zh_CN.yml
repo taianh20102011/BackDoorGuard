@@ -100,7 +100,7 @@
 "logger.discord-http-status": "Discord Webhook 返回 HTTP {status}。"
 "plugin.command-missing": "plugin.yml 中缺少命令 'bguard'；管理命令不可用。"
 
-# BackdoorGuard 1.2.0 scanner, watcher and audit messages
+# BackdoorGuard 2.0.0 scanner, watcher and audit messages
 "commands.cache-usage": "&e用法：/bguard cache clear"
 "commands.cache-cleared": "&a已清除干净扫描结果缓存。"
 "commands.audit-unavailable": "&c插件审计不可用。"

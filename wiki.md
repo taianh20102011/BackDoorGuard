@@ -1,6 +1,6 @@
 # BackdoorGuard Wiki
 
-English documentation for BackdoorGuard 1.2.0. For Vietnamese, see [README.vi.md](README.vi.md).
+English documentation for BackdoorGuard 2.0.0 (merged release). For Vietnamese, see [README.vi.md](README.vi.md).
 
 > **Important status note:** this repository is a source release. The project has passed documented static smoke checks, but a Maven build against the real Paper API and a live-server integration test have not yet been verified. Read [VALIDATION.md](VALIDATION.md) before deploying it.
 
@@ -11,6 +11,7 @@ English documentation for BackdoorGuard 1.2.0. For Vietnamese, see [README.vi.md
 - [Build and install](#build-and-install)
 - [First-run checklist](#first-run-checklist)
 - [Commands and permissions](#commands-and-permissions)
+- [Configuration profiles](#configuration-profiles)
 - [Configuration reference](#configuration-reference)
 - [Understanding scan results](#understanding-scan-results)
 - [Trusted and known-bad hashes](#trusted-and-known-bad-hashes)
@@ -57,7 +58,7 @@ The source targets the Paper/Spigot 1.21 ecosystem, but compatibility with every
    mvn clean package
    ```
 
-4. If the build succeeds, the expected JAR is `target/backdoorguard-1.2.0.jar`.
+4. If the build succeeds, the expected JAR is `target/backdoorguard-2.0.0.jar`.
 5. Copy that JAR into the server's `plugins/` directory.
 6. Start the server and check the console for startup errors.
 7. Review `plugins/BackdoorGuard/config.yml` and test on a staging server before production use.
@@ -87,6 +88,14 @@ All listed subcommands are available under `/bguard` and require `backdoorguard.
 | `/bguard trust <file.jar>` | Computes the SHA-256 of a JAR directly in the root `plugins/` directory and adds that exact hash to `trusted-jar-hashes`. Read the warning below before using it. |
 | `/bguard cache clear` | Clears cached scan results. |
 | `/bguard vl <player>` | Displays the player's command-heuristic violation score. This is not the score of a JAR scan. |
+| `/bguard scan <jar>` | Scan one JAR by filename within the configured scan scope. |
+| `/bguard scan all` | Scan all JARs within the configured scan scope. |
+| `/bguard scan force` | Clear clean-result cache and re-scan all JARs. |
+| `/bguard list` | List findings retained from recent scans. |
+| `/bguard info <jar>` | Scan a JAR and display detailed findings/severity. |
+| `/bguard untrust <jar|sha256>` | Remove a hash from the trusted list. |
+| `/bguard profile <newbie|senior>` | Switch configuration profile. |
+| `/bguard lang <code>` | Change default language, e.g. `vi` or `en`. |
 
 ### Permissions
 
@@ -97,6 +106,15 @@ All listed subcommands are available under `/bguard` and require `backdoorguard.
 | `backdoorguard.bypass` | Nobody | Bypass player-command heuristics. Grant only to accounts you trust. |
 
 There is no `/bguard help` subcommand in this version; use this page for command documentation.
+
+## Configuration profiles
+
+Set `setup.profile` in `plugins/BackdoorGuard/config.yml`, or use `/bguard profile newbie` / `/bguard profile senior`.
+
+- **Newbie:** use `setup.newbie.sensitivity` (`low-noise`, `balanced`, or `strict`) and the simple toggles for recursive scanning, text resources, encoded strings, file-change watching, staff alerts, and runtime auditing. `scan-speed` supports `low`, `balanced`, and `fast`.
+- **Senior:** the low-level values under `jar-scanner`, `plugin-audit`, `jvm-audit`, and `violation-weights` are authoritative. Tune thresholds, weights, URL host indicators, archive limits, and JVM-agent allow-list directly.
+
+Profile changes are persisted and configuration is reloaded. Thresholds are heuristic scores, not probabilities. Test strict settings in staging to understand false-positive rates.
 
 ## Configuration reference
 
@@ -242,7 +260,7 @@ To enable Discord alerts, set `discord.webhook-url` to a webhook URL you control
 ### The plugin does not load
 
 - Confirm the server is using a compatible Java runtime (JDK 21 for building; the server runtime must meet the Paper API requirements).
-- Confirm the built JAR is from `target/backdoorguard-1.2.0.jar` and placed in `plugins/`.
+- Confirm the built JAR is from `target/backdoorguard-2.0.0.jar` and placed in `plugins/`.
 - Inspect the full console stack trace and check that Paper API dependency resolution/build succeeded.
 - Remember that this source release has not yet been verified by a real Paper API Maven build or live-server test.
 

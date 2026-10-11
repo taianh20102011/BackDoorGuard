@@ -10,7 +10,6 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 /** Monitors execution of late-injected commands and configurable suspicious command names. */
 public final class CommandGuardListener implements Listener {
@@ -63,16 +62,12 @@ public final class CommandGuardListener implements Listener {
                 && !plugin.getCommandMapWatcher().isConfirmedInjected(baseCommand)) {
             return ViolationManager.Action.NONE;
         }
-        for (String keyword : plugin.getSuspiciousKeywords()) {
-            if (keyword == null || keyword.isBlank()) continue;
-            if (matchesWord(baseCommand, keyword.toLowerCase(Locale.ROOT))) {
-                return plugin.getViolationManager().addViolation(player,
-                        plugin.getMessages().get("violation.suspicious-category"),
-                        plugin.getWeights().suspiciousKeyword(),
-                        plugin.getMessages().get("violation.keyword-reason", "keyword", keyword, "message", message));
-            }
-        }
-        return ViolationManager.Action.NONE;
+        String keyword = plugin.getKeywordMatcher().firstMatch(lowerMessage);
+        if (keyword == null) return ViolationManager.Action.NONE;
+        return plugin.getViolationManager().addViolation(player,
+                plugin.getMessages().get("violation.suspicious-category"),
+                plugin.getWeights().suspiciousKeyword(),
+                plugin.getMessages().get("violation.keyword-reason", "keyword", keyword, "message", message));
     }
 
     private ViolationManager.Action checkUnknownCommand(Player player, String baseCommand, String message) {
@@ -106,8 +101,4 @@ public final class CommandGuardListener implements Listener {
         }
     }
 
-    private boolean matchesWord(String text, String keyword) {
-        return Pattern.compile("(?i)(^|[^a-z0-9])" + Pattern.quote(keyword) + "([^a-z0-9]|$)")
-                .matcher(text).find();
-    }
 }

@@ -4,7 +4,7 @@
 
 BackdoorGuard inspects plugin JARs for suspicious class-file references, method calls, embedded strings, archive anomalies, and combinations of behavior indicators. It can also watch the `plugins/` directory and audit selected aspects of the running server.
 
-> **Status:** source release `1.2.0`. Static smoke checks have been performed, but a Maven package against the real Paper API and a full server integration test have **not** yet been completed. See [VALIDATION.md](VALIDATION.md) before using it in production.
+> **Status:** merged release `2.0.0`. Static smoke checks have been performed, but a Maven package against the real Paper API and a full server integration test have **not** yet been completed. See [VALIDATION.md](VALIDATION.md) before using it in production.
 
 **Documentation:** see the [BackdoorGuard Wiki](wiki.md) for detailed setup, configuration, commands, scanning behavior, troubleshooting, and safe-use guidance. For Vietnamese, see [README.vi.md](README.vi.md).
 
@@ -26,6 +26,42 @@ BackdoorGuard is a **heuristic detection and auditing tool**, not a guarantee th
 
 These are source-level capabilities, not a claim that every detection has been validated against real malware or tested on every server build.
 
+
+## Beginner and advanced configuration profiles
+
+The default `setup.profile: newbie` exposes a small set of practical controls. Use `/bguard profile newbie` or `/bguard profile senior` to switch modes. The command saves the choice and reloads the configured services.
+
+```yaml
+setup:
+  profile: newbie
+  newbie:
+    sensitivity: balanced       # low-noise | balanced | strict
+    scan-subfolders: true
+    watch-for-file-changes: true
+    scan-text-resources: true
+    inspect-encoded-content: true
+    scan-speed: balanced        # low | balanced | fast
+    notify-staff: true
+    audit-runtime: true
+```
+
+- **Newbie:** adjust sensitivity and impact through a few high-level switches. `low-noise` uses higher score thresholds, `balanced` is the default, and `strict` uses lower thresholds. `scan-speed: low` uses one worker; `fast` uses up to four.
+- **Senior:** explicit settings under `jar-scanner`, `plugin-audit`, `jvm-audit`, `violation`, and `violation-weights` are applied directly. Tune `alert-threshold`, `high-threshold`, `critical-threshold`, `weights`, `combinations`, `extra-suspicious-hosts`, `library-multiplier`, and archive limits as needed.
+- Switching profiles does not erase the other settings. Review advanced values before changing from beginner to advanced mode.
+
+| Command | Purpose |
+|---|---|
+| `/bguard scan <jar>` | Scan one JAR in the configured scan scope. |
+| `/bguard scan all` | Scan all JARs in scope. |
+| `/bguard scan force` | Clear clean-result cache and rescan all JARs. |
+| `/bguard list` | Show findings stored in memory since the latest scan. |
+| `/bguard info <jar>` | Scan a JAR and show severity/details. |
+| `/bguard untrust <jar|sha256>` | Remove a hash from the trusted list. |
+| `/bguard profile <newbie|senior>` | Select a configuration profile. |
+| `/bguard lang <code>` | Change the default language, e.g. `en` or `vi`. |
+
+`/bguard trust <jar>` skips static scanning for the exact SHA-256 of the current file version. Use it only after independent verification. The scanner is heuristic; investigate a finding instead of treating a score as proof of malicious behavior.
+
 ## Requirements and compatibility
 
 - JDK **21**
@@ -46,7 +82,7 @@ mvn clean package
 Expected output JAR:
 
 ```text
-target/backdoorguard-1.2.0.jar
+target/backdoorguard-2.0.0.jar
 ```
 
 If Maven reports dependency-resolution or API errors, resolve those before deploying; this repository does not currently include a prebuilt JAR or Maven Wrapper.
@@ -54,7 +90,7 @@ If Maven reports dependency-resolution or API errors, resolve those before deplo
 ## Installation
 
 1. Build the project using the steps above.
-2. Copy `target/backdoorguard-1.2.0.jar` into the server's `plugins/` directory.
+2. Copy `target/backdoorguard-2.0.0.jar` into the server's `plugins/` directory.
 3. Start the server and review the console for startup errors.
 4. Open `plugins/BackdoorGuard/config.yml` and review scanning limits, the alert threshold, trusted hashes, webhook settings, and the selected language.
 5. Run `/bguard status` and `/bguard scan`, then review the reports on a staging server before production use.
@@ -94,7 +130,7 @@ The primary administrative permission is `backdoorguard.admin`. Alert recipients
 
 ## Validation status
 
-See [VALIDATION.md](VALIDATION.md) for the detailed check record. The documented smoke checks include Java compilation against temporary lightweight Bukkit/Paper API stubs, parsing of sample compiled class files, malformed class-file tests, a behavior-indicator probe, and consistency checks across the ten YAML language files.
+See [VALIDATION.md](VALIDATION.md) for the actual check record. For this merged source, Java syntax was compiled against temporary lightweight Bukkit/Paper API stubs, all bundled YAML and the Maven XML were parsed, and targeted URL-classifier and plugin load-before parser smoke checks were run. These do not substitute for a build against the real Paper API.
 
 **Not yet verified:** `mvn clean package` against the real Paper API, a live Paper/Spigot server startup, cross-version compatibility, sustained load/performance, and detection precision/recall on a representative labeled malware/benign corpus.
 

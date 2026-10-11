@@ -4,7 +4,7 @@
 
 BackdoorGuard kiểm tra JAR plugin để tìm tham chiếu class, lời gọi phương thức, chuỗi nhúng, bất thường của archive và các tổ hợp dấu hiệu hành vi đáng ngờ. Plugin cũng có thể theo dõi thư mục `plugins/` và kiểm toán một số dấu hiệu trên server đang chạy.
 
-> **Trạng thái:** source phiên bản `1.2.0`. Đã chạy kiểm tra tĩnh/smoke test, nhưng **chưa hoàn tất build Maven với Paper API thật và chưa kiểm thử tích hợp đầy đủ trên server**. Xem [VALIDATION.md](VALIDATION.md) trước khi dùng ở môi trường production.
+> **Trạng thái:** bản hợp nhất `2.0.0`. Đã chạy kiểm tra tĩnh/smoke test, nhưng **chưa hoàn tất build Maven với Paper API thật và chưa kiểm thử tích hợp đầy đủ trên server**. Xem [VALIDATION.md](VALIDATION.md) trước khi dùng ở môi trường production.
 
 **Tài liệu chi tiết:** xem [Wiki BackdoorGuard](wiki.md) để đọc hướng dẫn cấu hình, lệnh quản trị, cách hiểu kết quả quét, khắc phục sự cố và lưu ý an toàn.
 
@@ -26,6 +26,44 @@ BackdoorGuard là công cụ phát hiện heuristic và kiểm toán, không đ�
 
 Danh sách này mô tả chức năng trong source, không có nghĩa mọi phát hiện đã được xác thực trên mã độc thực tế hoặc đã thử trên mọi bản server.
 
+
+## Chọn cách cấu hình: Newbie hoặc Senior
+
+Sau khi khởi động, mở `plugins/BackdoorGuard/config.yml`. Mặc định `setup.profile: newbie` để người mới chỉ cần chỉnh một vài tùy chọn nhanh. Có thể đổi bằng `/bguard profile newbie` hoặc `/bguard profile senior`; sau đó các thiết lập được lưu và nạp lại.
+
+```yaml
+setup:
+  profile: newbie
+  newbie:
+    sensitivity: balanced       # low-noise | balanced | strict
+    scan-subfolders: true
+    watch-for-file-changes: true
+    scan-text-resources: true
+    inspect-encoded-content: true
+    scan-speed: balanced        # low | balanced | fast
+    notify-staff: true
+    audit-runtime: true
+```
+
+- **Newbie:** `sensitivity` là lựa chọn chính điều chỉnh độ nhạy. `low-noise` ít cảnh báo nhầm hơn; `balanced` là lựa chọn mặc định; `strict` dễ cảnh báo hơn. `scan-speed: low` giảm tải khi quét JAR lớn; `fast` dùng tối đa bốn worker.
+- **Senior:** các giá trị trong `jar-scanner`, `plugin-audit`, `jvm-audit`, `violation` và `violation-weights` được dùng trực tiếp. Các tham số quan trọng cho phân loại JAR gồm `alert-threshold`, `high-threshold`, `critical-threshold`, `weights`, `combinations`, `extra-suspicious-hosts`, `library-multiplier` và giới hạn archive. Điểm càng cao thì càng nhiều chỉ báo độc lập được tìm thấy; điểm không phải xác suất malware.
+- Đổi profile **không thay thế** nội dung các trường cấu hình. Khi chuyển từ `newbie` sang `senior`, hãy kiểm tra giá trị nâng cao trước khi dựa vào chúng.
+
+## Lệnh quản trị bổ sung
+
+| Lệnh | Tác dụng |
+|---|---|
+| `/bguard scan <jar>` | Quét riêng một JAR theo tên file trong phạm vi quét đã cấu hình. |
+| `/bguard scan all` | Quét toàn bộ JAR trong phạm vi. |
+| `/bguard scan force` | Xóa cache kết quả sạch rồi quét lại toàn bộ. |
+| `/bguard list` | Xem các phát hiện được lưu trong bộ nhớ kể từ lượt quét gần nhất. |
+| `/bguard info <jar>` | Quét riêng và hiển thị mức độ/chi tiết. |
+| `/bguard untrust <jar|sha256>` | Gỡ một hash khỏi danh sách tin cậy. |
+| `/bguard profile <newbie|senior>` | Chọn chế độ cấu hình. |
+| `/bguard lang <code>` | Đổi ngôn ngữ mặc định, ví dụ `vi`, `en`. |
+
+`/bguard trust <jar>` bỏ qua quét tĩnh cho **đúng SHA-256 của phiên bản hiện tại**. Chỉ dùng sau khi xác minh độc lập nguồn phát hành. Bộ quét là heuristic: hãy điều tra file bị cảnh báo trước khi gỡ khỏi server.
+
 ## Yêu cầu và tương thích
 
 - JDK **21**
@@ -46,7 +84,7 @@ mvn clean package
 JAR dự kiến:
 
 ```text
-target/backdoorguard-1.2.0.jar
+target/backdoorguard-2.0.0.jar
 ```
 
 Nếu Maven báo lỗi tải dependency hoặc lỗi API, hãy sửa lỗi đó trước khi triển khai. Repository hiện không kèm JAR dựng sẵn hoặc Maven Wrapper.
@@ -54,7 +92,7 @@ Nếu Maven báo lỗi tải dependency hoặc lỗi API, hãy sửa lỗi đó 
 ## Cài đặt
 
 1. Build project theo hướng dẫn trên.
-2. Chép `target/backdoorguard-1.2.0.jar` vào thư mục `plugins/` của server.
+2. Chép `target/backdoorguard-2.0.0.jar` vào thư mục `plugins/` của server.
 3. Khởi động server và kiểm tra console để tìm lỗi lúc nạp.
 4. Mở `plugins/BackdoorGuard/config.yml`, xem lại giới hạn quét, ngưỡng cảnh báo, hash tin cậy, webhook và ngôn ngữ.
 5. Chạy `/bguard status` và `/bguard scan`, kiểm tra cảnh báo trên server staging trước khi dùng production.
@@ -94,7 +132,7 @@ Quyền quản trị chính là `backdoorguard.admin`. Người nhận cảnh b�
 
 ## Trạng thái kiểm thử
 
-Xem [VALIDATION.md](VALIDATION.md) để biết các kiểm tra chi tiết. Smoke test được ghi nhận gồm biên dịch Java với stub Bukkit/Paper tạm thời, phân tích class file mẫu đã biên dịch, kiểm tra class bị hỏng, probe dấu hiệu hành vi và đối chiếu tính nhất quán của 10 tệp ngôn ngữ YAML.
+Xem [VALIDATION.md](VALIDATION.md) để biết đúng những kiểm tra đã chạy. Với source hợp nhất này, Java đã được kiểm tra cú pháp bằng stub Bukkit/Paper tạm thời; toàn bộ YAML và XML của Maven đã được parse; đồng thời đã chạy smoke test cho bộ phân loại URL và parser `load-before` trong descriptor plugin. Các bước này không thay thế build với Paper API thật.
 
 **Chưa xác minh:** `mvn clean package` với Paper API thật, khởi động server Paper/Spigot thực tế, tương thích nhiều phiên bản, hiệu năng tải dài hạn và độ chính xác phát hiện trên bộ dữ liệu mã độc/lành tính đã gán nhãn.
 

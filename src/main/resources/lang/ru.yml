@@ -100,7 +100,7 @@
 "logger.discord-http-status": "Вебхук Discord вернул HTTP {status}."
 "plugin.command-missing": "В plugin.yml отсутствует команда 'bguard'; административные команды недоступны."
 
-# BackdoorGuard 1.2.0 scanner, watcher and audit messages
+# BackdoorGuard 2.0.0 scanner, watcher and audit messages
 "commands.cache-usage": "&eИспользование: /bguard cache clear"
 "commands.cache-cleared": "&aКэш чистых результатов сканирования очищен."
 "commands.audit-unavailable": "&cАудит плагинов недоступен."

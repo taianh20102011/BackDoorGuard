@@ -1,6 +1,7 @@
 package com.security.backdoorguard.watch;
 
 import com.security.backdoorguard.BackdoorGuardPlugin;
+import com.security.backdoorguard.config.ConfigProfile;
 import com.security.backdoorguard.logging.SecurityLogger;
 import com.security.backdoorguard.scanner.JarScanner;
 
@@ -43,11 +44,11 @@ public final class PluginJarWatcher implements AutoCloseable {
     }
 
     public synchronized void start() {
-        if (!plugin.getConfig().getBoolean("jar-scanner.enabled", true) || !plugin.getConfig().getBoolean("jar-scanner.watch-enabled", true) || !running.compareAndSet(false, true)) return;
+        if (!plugin.getConfig().getBoolean("jar-scanner.enabled", true) || !ConfigProfile.watchFiles(plugin) || !running.compareAndSet(false, true)) return;
         try {
             Files.createDirectories(root);
             watchService = FileSystems.getDefault().newWatchService();
-            try (Stream<Path> paths = Files.walk(root)) {
+            try (Stream<Path> paths = ConfigProfile.recursiveScan(plugin) ? Files.walk(root) : Stream.of(root)) {
                 paths.filter(path -> !Files.isSymbolicLink(path) && Files.isDirectory(path))
                         .forEach(this::registerQuietly);
             }
@@ -94,7 +95,8 @@ public final class PluginJarWatcher implements AutoCloseable {
                 if (!(context instanceof Path relative)) continue;
                 Path changed = dir.resolve(relative).toAbsolutePath().normalize();
                 if (!changed.startsWith(root)) continue;
-                if (event.kind() == StandardWatchEventKinds.ENTRY_CREATE && !Files.isSymbolicLink(changed) && Files.isDirectory(changed)) {
+                if (event.kind() == StandardWatchEventKinds.ENTRY_CREATE && ConfigProfile.recursiveScan(plugin)
+                        && !Files.isSymbolicLink(changed) && Files.isDirectory(changed)) {
                     try (Stream<Path> paths = Files.walk(changed)) {
                         paths.filter(path -> !Files.isSymbolicLink(path) && Files.isDirectory(path))
                                 .forEach(this::registerQuietly);

@@ -1,6 +1,7 @@
 package com.security.backdoorguard;
 
 import com.security.backdoorguard.commands.BackdoorGuardCommand;
+import com.security.backdoorguard.config.ConfigProfile;
 import com.security.backdoorguard.i18n.LanguageManager;
 import com.security.backdoorguard.listeners.ChatTriggerListener;
 import com.security.backdoorguard.listeners.CommandGuardListener;
@@ -9,6 +10,7 @@ import com.security.backdoorguard.logging.SecurityLogger;
 import com.security.backdoorguard.scanner.JarScanner;
 import com.security.backdoorguard.violation.ViolationManager;
 import com.security.backdoorguard.violation.Weights;
+import com.security.backdoorguard.util.KeywordMatcher;
 import com.security.backdoorguard.watch.CommandMapWatcher;
 import com.security.backdoorguard.watch.OpWatcherTask;
 import com.security.backdoorguard.watch.PluginJarWatcher;
@@ -36,6 +38,7 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
     private BackdoorGuardCommand commandExecutor;
     private List<String> whitelistedOps = List.of();
     private List<String> suspiciousKeywords = List.of();
+    private volatile KeywordMatcher keywordMatcher = new KeywordMatcher(List.of());
     private Weights weights;
     private final List<BukkitTask> backgroundTasks = new ArrayList<>();
 
@@ -48,8 +51,7 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
 
         webhook = new DiscordWebhook(this, getConfig().getString("discord.webhook-url", ""),
                 getConfig().getString("discord.username", "BackdoorGuard"));
-        securityLogger = new SecurityLogger(this,
-                getConfig().getBoolean("logging.broadcast-to-admins", true), webhook);
+        securityLogger = new SecurityLogger(this, ConfigProfile.broadcastToAdmins(this), webhook);
         jarScanner = new JarScanner(this, securityLogger);
         JvmArgumentAudit.inspect(this, securityLogger);
         pluginJarWatcher = new PluginJarWatcher(this, jarScanner, securityLogger);
@@ -98,12 +100,14 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
         }
         if (pluginJarWatcher != null) pluginJarWatcher.start();
 
-        long pluginAuditBaselineTicks = Math.max(1, getConfig().getLong("plugin-audit.baseline-delay-seconds", 15)) * 20L;
-        long pluginAuditIntervalTicks = Math.max(10, getConfig().getLong("plugin-audit.check-interval-seconds", 60)) * 20L;
-        backgroundTasks.add(getServer().getScheduler().runTaskLater(this, () -> {
-            if (pluginAuditTask != null) pluginAuditTask.captureBaseline();
-            backgroundTasks.add(getServer().getScheduler().runTaskTimer(this, pluginAuditTask, pluginAuditIntervalTicks, pluginAuditIntervalTicks));
-        }, pluginAuditBaselineTicks));
+        if (ConfigProfile.pluginAuditEnabled(this)) {
+            long pluginAuditBaselineTicks = Math.max(1, getConfig().getLong("plugin-audit.baseline-delay-seconds", 15)) * 20L;
+            long pluginAuditIntervalTicks = Math.max(10, getConfig().getLong("plugin-audit.check-interval-seconds", 60)) * 20L;
+            backgroundTasks.add(getServer().getScheduler().runTaskLater(this, () -> {
+                if (pluginAuditTask != null) pluginAuditTask.captureBaseline();
+                backgroundTasks.add(getServer().getScheduler().runTaskTimer(this, pluginAuditTask, pluginAuditIntervalTicks, pluginAuditIntervalTicks));
+            }, pluginAuditBaselineTicks));
+        }
 
         if (getConfig().getBoolean("command-map-watch.enabled", true) && commandMapWatcher.isAvailable()) {
             long baselineDelayTicks = Math.max(1, getConfig().getLong("command-map-watch.baseline-delay-seconds", 5)) * 20L;
@@ -149,7 +153,7 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
         if (webhook != null) webhook.configure(getConfig().getString("discord.webhook-url", ""),
                 getConfig().getString("discord.username", "BackdoorGuard"));
         if (securityLogger != null) securityLogger.configure(getConfig().getBoolean("logging.enabled", true),
-                getConfig().getBoolean("logging.broadcast-to-admins", true), webhook);
+                ConfigProfile.broadcastToAdmins(this), webhook);
         if (violationManager != null) {
             violationManager.configure(getConfig().getDouble("violation.decay-per-interval", 5),
                     Math.max(20, getConfig().getLong("violation.decay-interval-seconds", 60) * 20L),
@@ -160,6 +164,8 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
 
         cancelBackgroundTasks();
         if (pluginJarWatcher != null) pluginJarWatcher.close();
+        if (jarScanner != null) jarScanner.shutdown();
+        jarScanner = new JarScanner(this, securityLogger);
         if (commandMapWatcher != null) {
             // Recreate the watcher so the next baseline reflects the newly loaded configuration state.
             commandMapWatcher = new CommandMapWatcher(this, securityLogger);
@@ -179,6 +185,11 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
                 .distinct().toList();
         suspiciousKeywords = getConfig().getStringList("suspicious-keywords").stream()
                 .filter(value -> value != null && !value.isBlank()).map(String::trim).distinct().toList();
+        keywordMatcher = new KeywordMatcher(suspiciousKeywords);
+        String selectedProfile = getConfig().getString("setup.profile", "newbie");
+        if (selectedProfile == null || (!selectedProfile.equalsIgnoreCase("newbie") && !selectedProfile.equalsIgnoreCase("senior"))) {
+            getLogger().warning("Unknown setup.profile; using newbie preset. Supported: newbie, senior.");
+        }
         weights = new Weights(
                 getConfig().getDouble("violation-weights.suspicious-keyword", 15),
                 getConfig().getDouble("violation-weights.unregistered-command", 25),
@@ -190,6 +201,7 @@ public final class BackdoorGuardPlugin extends JavaPlugin {
     public LanguageManager getMessages() { return messages; }
     public List<String> getWhitelistedOps() { return whitelistedOps; }
     public List<String> getSuspiciousKeywords() { return suspiciousKeywords; }
+    public KeywordMatcher getKeywordMatcher() { return keywordMatcher; }
     public Weights getWeights() { return weights; }
     public DiscordWebhook getWebhook() { return webhook; }
     public JarScanner getJarScanner() { return jarScanner; }

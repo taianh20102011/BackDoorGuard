@@ -100,7 +100,7 @@
 "logger.discord-http-status": "Der Discord-Webhook hat HTTP {status} zurückgegeben."
 "plugin.command-missing": "Der Befehl 'bguard' fehlt in plugin.yml; Verwaltungsbefehle sind nicht verfügbar."
 
-# BackdoorGuard 1.2.0 scanner, watcher and audit messages
+# BackdoorGuard 2.0.0 scanner, watcher and audit messages
 "commands.cache-usage": "&eVerwendung: /bguard cache clear"
 "commands.cache-cleared": "&aCache der sauberen Scan-Ergebnisse geleert."
 "commands.audit-unavailable": "&cPlugin-Audit nicht verfügbar."
