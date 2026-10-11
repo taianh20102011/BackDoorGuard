@@ -1,7 +1,9 @@
+
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.security</groupId>
@@ -30,28 +32,48 @@
         </dependency>
     </dependencies>
 
+    <!-- Publish to GitHub Packages -->
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <name>BackdoorGuard GitHub Packages</name>
+            <url>https://maven.pkg.github.com/taianh20102011/BackDoorGuard</url>
+        </repository>
+    </distributionManagement>
+
     <build>
         <finalName>${project.artifactId}-${project.version}</finalName>
+
         <resources>
-            <!-- YAML strings include literal ${...} and regexes; filter only plugin.yml version metadata. -->
+            <!-- Preserve YAML contents without Maven filtering. -->
             <resource>
                 <directory>src/main/resources</directory>
                 <filtering>false</filtering>
-                <excludes><exclude>plugin.yml</exclude></excludes>
+                <excludes>
+                    <exclude>plugin.yml</exclude>
+                </excludes>
             </resource>
+
+            <!-- Filter version metadata in plugin.yml only. -->
             <resource>
                 <directory>src/main/resources</directory>
                 <filtering>true</filtering>
-                <includes><include>plugin.yml</include></includes>
+                <includes>
+                    <include>plugin.yml</include>
+                </includes>
             </resource>
         </resources>
+
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
-                <configuration><release>21</release></configuration>
+                <configuration>
+                    <release>21</release>
+                </configuration>
             </plugin>
         </plugins>
     </build>
+
 </project>
